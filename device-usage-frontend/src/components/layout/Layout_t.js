@@ -51,7 +51,6 @@ const Layout = ({ children }) => {
     { text: 'Dashboard', icon: <DashboardIcon />, path: '/' },
     { text: 'Dispositivos', icon: <DevicesIcon />, path: '/devices' },
     { text: 'Historial', icon: <HistoryIcon />, path: '/history' },
-    { text: 'Límites', icon: <TimerIcon />, path: '/limits' },
   ];
 
   const drawer = (

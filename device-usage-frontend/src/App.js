@@ -12,7 +12,6 @@ import Dashboard from './pages/dashboard/Dashboard';
 import DeviceList from './pages/devices/DeviceList';
 import DeviceDetail from './pages/devices/DeviceDetail';
 import SessionHistory from './pages/usage/SessionHistory';
-import LimitList from './pages/limits/LimitList';
 import Layout from './components/layout/Layout_t';
 
 // Ruta protegida por autenticación
@@ -82,13 +81,6 @@ function AppContent() {
           </ProtectedRoute>
         } />
         
-        <Route path="/limits" element={
-          <ProtectedRoute>
-            <Layout>
-              <LimitList />
-            </Layout>
-          </ProtectedRoute>
-        } />
       </Routes>
     </BrowserRouter>
   );
