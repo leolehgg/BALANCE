@@ -32,4 +32,11 @@ public interface UsageSessionRepository extends JpaRepository<UsageSession, Long
 
     List<UsageSession> findByDeviceUserAndUpdatedAtAfterAndDeviceIdNot(
             User user, LocalDateTime afterTime, Long deviceId);
+
+    // Agregar a UsageSessionRepository
+    List<UsageSession> findByDeviceIdAndStartTimeBeforeAndEndTimeAfter(
+            Long deviceId, LocalDateTime date, LocalDateTime sameDate);
+
+    List<UsageSession> findByDeviceUserAndStartTimeBeforeAndEndTimeAfter(
+            User user, LocalDateTime date, LocalDateTime sameDate);
 }

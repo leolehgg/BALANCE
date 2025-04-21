@@ -19,13 +19,9 @@ import org.springframework.data.domain.Sort;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.time.DayOfWeek;
-import java.time.LocalDate;
-import java.time.LocalDateTime;
+import java.time.*;
 import java.time.temporal.ChronoUnit;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
@@ -125,69 +121,6 @@ public class UsageSessionServiceImpl implements UsageSessionService {
         return sessions.map(session -> modelMapper.map(session, UsageSessionDto.class));
     }
 
-    @Override
-    public DailyUsageStatsDto getDailyUsageStats(LocalDate date, Long deviceId) {
-        User currentUser = userService.getCurrentUser();
-
-        LocalDateTime startOfDay = date.atStartOfDay();
-        LocalDateTime endOfDay = date.plusDays(1).atStartOfDay();
-
-        List<UsageSession> sessions;
-        if (deviceId != null) {
-            // Validate device belongs to user
-            deviceRepository.findByIdAndUser(deviceId, currentUser)
-                    .orElseThrow(() -> new ResourceNotFoundException("Device not found or not authorized"));
-
-            sessions = usageSessionRepository.findByDeviceIdAndStartTimeBetweenAndEndTimeIsNotNull(
-                    deviceId, startOfDay, endOfDay);
-        } else {
-            sessions = usageSessionRepository.findByDeviceUserAndStartTimeBetweenAndEndTimeIsNotNull(
-                    currentUser, startOfDay, endOfDay);
-        }
-
-        // Calculate statistics
-        long totalUsageSeconds = sessions.stream()
-                .mapToLong(UsageSession::getDurationSeconds)
-                .sum();
-
-        // Group by application
-        Map<String, Long> appUsageTime = sessions.stream()
-                .collect(Collectors.groupingBy(
-                        s -> s.getApplication().getName(),
-                        Collectors.summingLong(UsageSession::getDurationSeconds)
-                ));
-
-        // Group by category
-        Map<String, Long> categoryUsageTime = sessions.stream()
-                .filter(s -> s.getApplication().getCategory() != null)
-                .collect(Collectors.groupingBy(
-                        s -> s.getApplication().getCategory().getName(),
-                        Collectors.summingLong(UsageSession::getDurationSeconds)
-                ));
-
-        // Group by device
-        Map<String, Long> deviceUsageTime = sessions.stream()
-                .collect(Collectors.groupingBy(
-                        s -> s.getDevice().getName(),
-                        Collectors.summingLong(UsageSession::getDurationSeconds)
-                ));
-
-        // Productive vs non-productive time
-        long productiveTimeSeconds = sessions.stream()
-                .filter(s -> s.getApplication().isProductive())
-                .mapToLong(UsageSession::getDurationSeconds)
-                .sum();
-
-        return DailyUsageStatsDto.builder()
-                .date(date)
-                .totalUsageSeconds(totalUsageSeconds)
-                .applicationUsage(appUsageTime)
-                .categoryUsage(categoryUsageTime)
-                .deviceUsage(deviceUsageTime)
-                .productiveTimeSeconds(productiveTimeSeconds)
-                .nonProductiveTimeSeconds(totalUsageSeconds - productiveTimeSeconds)
-                .build();
-    }
 
     @Override
     public WeeklyUsageStatsDto getWeeklyUsageStats(LocalDate startOfWeek, Long deviceId) {
@@ -236,4 +169,240 @@ public class UsageSessionServiceImpl implements UsageSessionService {
                 .topApplications(topApps)
                 .build();
     }
+
+
+    @Override
+    public DailyUsageStatsDto getDailyUsageStats(LocalDate date, Long deviceId) {
+        User currentUser = userService.getCurrentUser();
+        LocalDateTime startOfDay = date.atStartOfDay();
+        LocalDateTime endOfDay = date.plusDays(1).atStartOfDay();
+
+        List<UsageSession> sessions;
+        if (deviceId != null) {
+            deviceRepository.findByIdAndUser(deviceId, currentUser)
+                    .orElseThrow(() -> new ResourceNotFoundException("Device not found or not authorized"));
+
+            sessions = usageSessionRepository.findByDeviceIdAndStartTimeBetweenAndEndTimeIsNotNull(
+                    deviceId, startOfDay, endOfDay);
+
+            // También incluir sesiones que comenzaron antes pero terminaron durante este día
+            List<UsageSession> overlapSessions = usageSessionRepository.findByDeviceIdAndStartTimeBeforeAndEndTimeAfter(
+                    deviceId, startOfDay, startOfDay);
+            sessions.addAll(overlapSessions);
+        } else {
+            sessions = usageSessionRepository.findByDeviceUserAndStartTimeBetweenAndEndTimeIsNotNull(
+                    currentUser, startOfDay, endOfDay);
+
+            // También incluir sesiones que comenzaron antes pero terminaron durante este día
+            List<UsageSession> overlapSessions = usageSessionRepository.findByDeviceUserAndStartTimeBeforeAndEndTimeAfter(
+                    currentUser, startOfDay, startOfDay);
+            sessions.addAll(overlapSessions);
+        }
+
+        // Ajustar el tiempo de cada sesión para que solo cuente el tiempo dentro del día actual
+        List<AdjustedSessionDto> adjustedSessions = sessions.stream()
+                .map(session -> calculateSessionTimeInDay(session, startOfDay, endOfDay))
+                .collect(Collectors.toList());
+
+        // Calcular tiempo total sin superposiciones entre dispositivos
+        Map<LocalDateTime, Set<String>> deviceTimeMap = new TreeMap<>();
+
+        // Crear un mapa de cada minuto del día y qué dispositivos estaban activos
+        for (AdjustedSessionDto session : adjustedSessions) {
+            LocalDateTime current = session.getStartTime();
+            while (current.isBefore(session.getEndTime())) {
+                Set<String> activeDevices = deviceTimeMap.getOrDefault(current, new HashSet<>());
+                activeDevices.add(session.getDeviceId());
+                deviceTimeMap.put(current, activeDevices);
+                current = current.plusMinutes(1);
+            }
+        }
+
+        // Calcular el tiempo total sin superposiciones (en minutos)
+        long totalNonOverlappingMinutes = deviceTimeMap.values().size();
+        long totalUsageSeconds = totalNonOverlappingMinutes * 60;
+
+        // Calcular estadísticas por app y categoría (ajustando por tiempo real en el día)
+        Map<String, Long> appUsageTime = calculateAppUsage(adjustedSessions);
+        Map<String, Long> categoryUsageTime = calculateCategoryUsage(adjustedSessions);
+        Map<String, Long> deviceUsageTime = calculateDeviceUsage(adjustedSessions);
+
+        // Productive vs non-productive time
+        long productiveTimeSeconds = calculateProductiveTime(adjustedSessions);
+
+        return DailyUsageStatsDto.builder()
+                .date(date)
+                .totalUsageSeconds(totalUsageSeconds)
+                .applicationUsage(appUsageTime)
+                .categoryUsage(categoryUsageTime)
+                .deviceUsage(deviceUsageTime)
+                .productiveTimeSeconds(productiveTimeSeconds)
+                .nonProductiveTimeSeconds(totalUsageSeconds - productiveTimeSeconds)
+                .build();
+    }
+
+
+
+    private AdjustedSessionDto calculateSessionTimeInDay(UsageSession session, LocalDateTime startOfDay, LocalDateTime endOfDay) {
+        AdjustedSessionDto adjusted = new AdjustedSessionDto();
+        adjusted.setDeviceId(session.getDevice().getId().toString());
+        adjusted.setApplication(session.getApplication());
+
+        // Ajustar tiempos para que estén dentro del día
+        LocalDateTime sessionStart = session.getStartTime().isBefore(startOfDay) ?
+                startOfDay : session.getStartTime();
+        LocalDateTime sessionEnd = session.getEndTime().isAfter(endOfDay) ?
+                endOfDay : session.getEndTime();
+
+        adjusted.setStartTime(sessionStart);
+        adjusted.setEndTime(sessionEnd);
+
+        // Calcular la duración ajustada
+        adjusted.setDurationSeconds(ChronoUnit.SECONDS.between(sessionStart, sessionEnd));
+
+        return adjusted;
+    }
+
+    // Métodos para calcular uso por aplicación, categoría y dispositivo
+    private Map<String, Long> calculateAppUsage(List<AdjustedSessionDto> sessions) {
+        return sessions.stream()
+                .collect(Collectors.groupingBy(
+                        s -> s.getApplication().getName(),
+                        Collectors.summingLong(AdjustedSessionDto::getDurationSeconds)
+                ));
+    }
+
+    private Map<String, Long> calculateCategoryUsage(List<AdjustedSessionDto> sessions) {
+        return sessions.stream()
+                .filter(s -> s.getApplication().getCategory() != null)
+                .collect(Collectors.groupingBy(
+                        s -> s.getApplication().getCategory().getName(),
+                        Collectors.summingLong(AdjustedSessionDto::getDurationSeconds)
+                ));
+    }
+
+    private Map<String, Long> calculateDeviceUsage(List<AdjustedSessionDto> sessions) {
+        return sessions.stream()
+                .collect(Collectors.groupingBy(
+                        AdjustedSessionDto::getDeviceId,
+                        Collectors.summingLong(AdjustedSessionDto::getDurationSeconds)
+                ));
+    }
+
+    private long calculateProductiveTime(List<AdjustedSessionDto> sessions) {
+        return sessions.stream()
+                .filter(s -> s.getApplication().isProductive())
+                .mapToLong(AdjustedSessionDto::getDurationSeconds)
+                .sum();
+    }
+
+
+
+    @Override
+    public MonthlyUsageStatsDto getMonthlyUsageStats(YearMonth month, Long deviceId) {
+        User currentUser = userService.getCurrentUser();
+
+        LocalDate startDate = month.atDay(1);
+        LocalDate endDate = month.atEndOfMonth();
+
+        Map<Integer, DailyUsageStatsDto> dailyStats = new HashMap<>();
+        Map<Integer, Long> dailyUsageTrend = new HashMap<>();
+
+        // Obtener estadísticas para cada día del mes
+        for (int day = 1; day <= month.lengthOfMonth(); day++) {
+            LocalDate currentDate = month.atDay(day);
+            DailyUsageStatsDto stats = getDailyUsageStats(currentDate, deviceId);
+
+            dailyStats.put(day, stats);
+            dailyUsageTrend.put(day, stats.getTotalUsageSeconds());
+        }
+
+        // Calcular totales mensuales
+        long totalMonthlyUsageSeconds = dailyStats.values().stream()
+                .mapToLong(DailyUsageStatsDto::getTotalUsageSeconds)
+                .sum();
+
+        long productiveTimeSeconds = dailyStats.values().stream()
+                .mapToLong(DailyUsageStatsDto::getProductiveTimeSeconds)
+                .sum();
+
+        // Fusionar uso de aplicaciones
+        Map<String, Long> appUsageTime = new HashMap<>();
+        dailyStats.values().forEach(day -> {
+            day.getApplicationUsage().forEach((app, time) -> {
+                appUsageTime.merge(app, time, Long::sum);
+            });
+        });
+
+        // Obtener top 5 apps
+        List<AppUsageDto> topApps = appUsageTime.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                .limit(5)
+                .map(e -> new AppUsageDto(e.getKey(), e.getValue()))
+                .collect(Collectors.toList());
+
+        return MonthlyUsageStatsDto.builder()
+                .month(month)
+                .startDate(startDate)
+                .endDate(endDate)
+                .dailyStats(dailyStats)
+                .dailyUsageTrend(dailyUsageTrend)
+                .totalUsageSeconds(totalMonthlyUsageSeconds)
+                .productiveTimeSeconds(productiveTimeSeconds)
+                .nonProductiveTimeSeconds(totalMonthlyUsageSeconds - productiveTimeSeconds)
+                .topApplications(topApps)
+                .build();
+    }
+
+    @Override
+    public YearlyUsageStatsDto getYearlyUsageStats(Year year, Long deviceId) {
+        User currentUser = userService.getCurrentUser();
+
+        Map<Month, MonthlyUsageStatsDto> monthlyStats = new HashMap<>();
+        Map<Month, Long> monthlyUsageTrend = new HashMap<>();
+
+        // Obtener estadísticas para cada mes del año
+        for (Month month : Month.values()) {
+            YearMonth yearMonth = YearMonth.of(year.getValue(), month);
+            MonthlyUsageStatsDto stats = getMonthlyUsageStats(yearMonth, deviceId);
+
+            monthlyStats.put(month, stats);
+            monthlyUsageTrend.put(month, stats.getTotalUsageSeconds());
+        }
+
+        // Calcular totales anuales
+        long totalYearlyUsageSeconds = monthlyStats.values().stream()
+                .mapToLong(MonthlyUsageStatsDto::getTotalUsageSeconds)
+                .sum();
+
+        long productiveTimeSeconds = monthlyStats.values().stream()
+                .mapToLong(MonthlyUsageStatsDto::getProductiveTimeSeconds)
+                .sum();
+
+        // Fusionar uso de aplicaciones de todos los meses
+        Map<String, Long> appUsageTime = new HashMap<>();
+        monthlyStats.values().forEach(month -> {
+            month.getTopApplications().forEach(app -> {
+                appUsageTime.merge(app.getName(), app.getDurationSeconds(), Long::sum);
+            });
+        });
+
+        // Obtener top 5 apps del año
+        List<AppUsageDto> topApps = appUsageTime.entrySet().stream()
+                .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
+                .limit(5)
+                .map(e -> new AppUsageDto(e.getKey(), e.getValue()))
+                .collect(Collectors.toList());
+
+        return YearlyUsageStatsDto.builder()
+                .year(year)
+                .monthlyStats(monthlyStats)
+                .monthlyUsageTrend(monthlyUsageTrend)
+                .totalUsageSeconds(totalYearlyUsageSeconds)
+                .productiveTimeSeconds(productiveTimeSeconds)
+                .nonProductiveTimeSeconds(totalYearlyUsageSeconds - productiveTimeSeconds)
+                .topApplications(topApps)
+                .build();
+    }
+
 }

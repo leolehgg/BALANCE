@@ -12,6 +12,8 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.LocalDate;
+import java.time.Year;
+import java.time.YearMonth;
 
 @RestController
 @RequestMapping("/api/usage")
@@ -61,6 +63,24 @@ public class UsageController {
             @RequestParam(required = false) Long deviceId) {
 
         WeeklyUsageStatsDto stats = usageSessionService.getWeeklyUsageStats(startOfWeek, deviceId);
+        return ResponseEntity.ok(stats);
+    }
+
+    @GetMapping("/stats/monthly")
+    public ResponseEntity<MonthlyUsageStatsDto> getMonthlyStats(
+            @RequestParam @DateTimeFormat(pattern = "yyyy-MM") YearMonth month,
+            @RequestParam(required = false) Long deviceId) {
+
+        MonthlyUsageStatsDto stats = usageSessionService.getMonthlyUsageStats(month, deviceId);
+        return ResponseEntity.ok(stats);
+    }
+
+    @GetMapping("/stats/yearly")
+    public ResponseEntity<YearlyUsageStatsDto> getYearlyStats(
+            @RequestParam @DateTimeFormat(pattern = "yyyy") Year year,
+            @RequestParam(required = false) Long deviceId) {
+
+        YearlyUsageStatsDto stats = usageSessionService.getYearlyUsageStats(year, deviceId);
         return ResponseEntity.ok(stats);
     }
 }

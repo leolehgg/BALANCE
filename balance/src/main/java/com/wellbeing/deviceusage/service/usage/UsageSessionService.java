@@ -4,6 +4,9 @@ import com.wellbeing.deviceusage.dto.usage.*;
 import org.springframework.data.domain.Page;
 
 import java.time.LocalDate;
+import java.time.Year;
+import java.time.YearMonth;
+
 
 public interface UsageSessionService {
     UsageSessionDto startSession(StartSessionRequest request);
@@ -16,4 +19,9 @@ public interface UsageSessionService {
     DailyUsageStatsDto getDailyUsageStats(LocalDate date, Long deviceId);
 
     WeeklyUsageStatsDto getWeeklyUsageStats(LocalDate startOfWeek, Long deviceId);
+
+    MonthlyUsageStatsDto getMonthlyUsageStats(YearMonth month, Long deviceId);
+
+
+    YearlyUsageStatsDto getYearlyUsageStats(Year year, Long deviceId);
 }

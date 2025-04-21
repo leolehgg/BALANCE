@@ -1,4 +1,4 @@
-// src/components/layout/Layout.js
+// src/components/layout/Layout_t.js
 import React, { useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
@@ -63,8 +63,8 @@ const Layout = ({ children }) => {
       <Divider />
       <List>
         {menuItems.map((item) => (
-          <ListItem 
-            button 
+          <ListItem
+            button
             key={item.text}
             onClick={() => navigate(item.path)}
             selected={location.pathname === item.path}
@@ -79,11 +79,11 @@ const Layout = ({ children }) => {
 
   return (
     <Box sx={{ display: 'flex' }}>
-      <AppBar 
-        position="fixed" 
-        sx={{ 
+      <AppBar
+        position="fixed"
+        sx={{
           zIndex: (theme) => theme.zIndex.drawer + 1,
-          ...(drawerOpen && !isSmallScreen && { 
+          ...(drawerOpen && !isSmallScreen && {
             width: `calc(100% - ${drawerWidth}px)`,
             marginLeft: `${drawerWidth}px`
           })

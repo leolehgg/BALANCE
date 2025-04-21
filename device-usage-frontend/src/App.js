@@ -12,18 +12,16 @@ import Dashboard from './pages/dashboard/Dashboard';
 import DeviceList from './pages/devices/DeviceList';
 import DeviceDetail from './pages/devices/DeviceDetail';
 import SessionHistory from './pages/usage/SessionHistory';
+import UsageHistory from './pages/usage/UsageHistory'; // <- Nueva importación
 import Layout from './components/layout/Layout_t';
 
 // Ruta protegida por autenticación
 const ProtectedRoute = ({ children }) => {
   const { user, loading } = useAuth();
-  
   if (loading) return <div>Cargando...</div>;
-  
   if (!user) {
     return <Navigate to="/login" />;
   }
-  
   return children;
 };
 
@@ -76,7 +74,7 @@ function AppContent() {
         <Route path="/history" element={
           <ProtectedRoute>
             <Layout>
-              <SessionHistory />
+              <UsageHistory />
             </Layout>
           </ProtectedRoute>
         } />
