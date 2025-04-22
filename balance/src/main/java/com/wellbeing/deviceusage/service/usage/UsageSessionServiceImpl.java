@@ -27,6 +27,7 @@ import java.util.stream.Collectors;
 @Service
 @Transactional
 public class UsageSessionServiceImpl implements UsageSessionService {
+
     @Autowired
     private UsageSessionRepository usageSessionRepository;
 
@@ -44,23 +45,20 @@ public class UsageSessionServiceImpl implements UsageSessionService {
 
     @Override
     public UsageSessionDto startSession(StartSessionRequest request) {
-        // Validate device belongs to current user
         User currentUser = userService.getCurrentUser();
         Device device = deviceRepository.findByIdAndUser(request.getDeviceId(), currentUser)
                 .orElseThrow(() -> new ResourceNotFoundException("Device not found or not authorized"));
 
-        // Get or create application
         Application application = applicationRepository.findByPackageName(request.getPackageName())
                 .orElseGet(() -> {
                     Application newApp = Application.builder()
                             .name(request.getApplicationName())
                             .packageName(request.getPackageName())
-                            .productive(false) // Default value, can be updated later
+                            .productive(false)
                             .build();
                     return applicationRepository.save(newApp);
                 });
 
-        // Create new session
         UsageSession session = UsageSession.builder()
                 .device(device)
                 .application(application)
@@ -69,27 +67,22 @@ public class UsageSessionServiceImpl implements UsageSessionService {
                 .build();
 
         UsageSession savedSession = usageSessionRepository.save(session);
-
-        return modelMapper.map(savedSession, UsageSessionDto.class);
+        return toUsageSessionDto(savedSession);
     }
 
     @Override
     public UsageSessionDto endSession(Long sessionId, EndSessionRequest request) {
-        // Validate session belongs to current user
         User currentUser = userService.getCurrentUser();
         UsageSession session = usageSessionRepository.findByIdAndDeviceUser(sessionId, currentUser)
                 .orElseThrow(() -> new ResourceNotFoundException("Session not found or not authorized"));
 
-        // Set end time and calculate duration
         LocalDateTime endTime = request.getEndTime();
         session.setEndTime(endTime);
-
         long durationSeconds = ChronoUnit.SECONDS.between(session.getStartTime(), endTime);
         session.setDurationSeconds(durationSeconds);
 
         UsageSession updatedSession = usageSessionRepository.save(session);
-
-        return modelMapper.map(updatedSession, UsageSessionDto.class);
+        return toUsageSessionDto(updatedSession);
     }
 
     @Override
@@ -107,7 +100,6 @@ public class UsageSessionServiceImpl implements UsageSessionService {
 
         Page<UsageSession> sessions;
         if (deviceId != null) {
-            // Validate device belongs to user
             deviceRepository.findByIdAndUser(deviceId, currentUser)
                     .orElseThrow(() -> new ResourceNotFoundException("Device not found or not authorized"));
 
@@ -118,24 +110,33 @@ public class UsageSessionServiceImpl implements UsageSessionService {
                     currentUser, startDateTime, endDateTime, pageable);
         }
 
-        return sessions.map(session -> modelMapper.map(session, UsageSessionDto.class));
+        return sessions.map(this::toUsageSessionDto);
     }
 
+    // Méto_do para mapear manualmente UsageSession a UsageSessionDto
+    private UsageSessionDto toUsageSessionDto(UsageSession session) {
+        UsageSessionDto dto = new UsageSessionDto();
+        dto.setId(session.getId());
+        dto.setClientId(session.getClientId());
+        dto.setApplicationName(session.getApplication() != null ? session.getApplication().getName() : null);
+        dto.setPackageName(session.getApplication() != null ? session.getApplication().getPackageName() : null);
+        dto.setStartTime(session.getStartTime());
+        dto.setEndTime(session.getEndTime());
+        dto.setDurationSeconds(session.getDurationSeconds());
+        return dto;
+    }
 
     @Override
     public WeeklyUsageStatsDto getWeeklyUsageStats(LocalDate startOfWeek, Long deviceId) {
         User currentUser = userService.getCurrentUser();
-
         Map<DayOfWeek, DailyUsageStatsDto> dailyStats = new HashMap<>();
 
-        // Get stats for each day of the week
         for (int i = 0; i < 7; i++) {
             LocalDate currentDate = startOfWeek.plusDays(i);
             DailyUsageStatsDto stats = getDailyUsageStats(currentDate, deviceId);
             dailyStats.put(currentDate.getDayOfWeek(), stats);
         }
 
-        // Calculate weekly totals
         long totalWeeklyUsageSeconds = dailyStats.values().stream()
                 .mapToLong(DailyUsageStatsDto::getTotalUsageSeconds)
                 .sum();
@@ -144,7 +145,6 @@ public class UsageSessionServiceImpl implements UsageSessionService {
                 .mapToLong(DailyUsageStatsDto::getProductiveTimeSeconds)
                 .sum();
 
-        // Merge application usage
         Map<String, Long> appUsageTime = new HashMap<>();
         dailyStats.values().forEach(day -> {
             day.getApplicationUsage().forEach((app, time) -> {
@@ -152,7 +152,6 @@ public class UsageSessionServiceImpl implements UsageSessionService {
             });
         });
 
-        // Get top 5 apps
         List<AppUsageDto> topApps = appUsageTime.entrySet().stream()
                 .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
                 .limit(5)
@@ -170,7 +169,6 @@ public class UsageSessionServiceImpl implements UsageSessionService {
                 .build();
     }
 
-
     @Override
     public DailyUsageStatsDto getDailyUsageStats(LocalDate date, Long deviceId) {
         User currentUser = userService.getCurrentUser();
@@ -181,11 +179,9 @@ public class UsageSessionServiceImpl implements UsageSessionService {
         if (deviceId != null) {
             deviceRepository.findByIdAndUser(deviceId, currentUser)
                     .orElseThrow(() -> new ResourceNotFoundException("Device not found or not authorized"));
-
             sessions = usageSessionRepository.findByDeviceIdAndStartTimeBetweenAndEndTimeIsNotNull(
                     deviceId, startOfDay, endOfDay);
 
-            // También incluir sesiones que comenzaron antes pero terminaron durante este día
             List<UsageSession> overlapSessions = usageSessionRepository.findByDeviceIdAndStartTimeBeforeAndEndTimeAfter(
                     deviceId, startOfDay, startOfDay);
             sessions.addAll(overlapSessions);
@@ -193,21 +189,16 @@ public class UsageSessionServiceImpl implements UsageSessionService {
             sessions = usageSessionRepository.findByDeviceUserAndStartTimeBetweenAndEndTimeIsNotNull(
                     currentUser, startOfDay, endOfDay);
 
-            // También incluir sesiones que comenzaron antes pero terminaron durante este día
             List<UsageSession> overlapSessions = usageSessionRepository.findByDeviceUserAndStartTimeBeforeAndEndTimeAfter(
                     currentUser, startOfDay, startOfDay);
             sessions.addAll(overlapSessions);
         }
 
-        // Ajustar el tiempo de cada sesión para que solo cuente el tiempo dentro del día actual
         List<AdjustedSessionDto> adjustedSessions = sessions.stream()
                 .map(session -> calculateSessionTimeInDay(session, startOfDay, endOfDay))
                 .collect(Collectors.toList());
 
-        // Calcular tiempo total sin superposiciones entre dispositivos
         Map<LocalDateTime, Set<String>> deviceTimeMap = new TreeMap<>();
-
-        // Crear un mapa de cada minuto del día y qué dispositivos estaban activos
         for (AdjustedSessionDto session : adjustedSessions) {
             LocalDateTime current = session.getStartTime();
             while (current.isBefore(session.getEndTime())) {
@@ -218,16 +209,12 @@ public class UsageSessionServiceImpl implements UsageSessionService {
             }
         }
 
-        // Calcular el tiempo total sin superposiciones (en minutos)
         long totalNonOverlappingMinutes = deviceTimeMap.values().size();
         long totalUsageSeconds = totalNonOverlappingMinutes * 60;
 
-        // Calcular estadísticas por app y categoría (ajustando por tiempo real en el día)
         Map<String, Long> appUsageTime = calculateAppUsage(adjustedSessions);
         Map<String, Long> categoryUsageTime = calculateCategoryUsage(adjustedSessions);
         Map<String, Long> deviceUsageTime = calculateDeviceUsage(adjustedSessions);
-
-        // Productive vs non-productive time
         long productiveTimeSeconds = calculateProductiveTime(adjustedSessions);
 
         return DailyUsageStatsDto.builder()
@@ -241,14 +228,11 @@ public class UsageSessionServiceImpl implements UsageSessionService {
                 .build();
     }
 
-
-
     private AdjustedSessionDto calculateSessionTimeInDay(UsageSession session, LocalDateTime startOfDay, LocalDateTime endOfDay) {
         AdjustedSessionDto adjusted = new AdjustedSessionDto();
         adjusted.setDeviceId(session.getDevice().getId().toString());
         adjusted.setApplication(session.getApplication());
 
-        // Ajustar tiempos para que estén dentro del día
         LocalDateTime sessionStart = session.getStartTime().isBefore(startOfDay) ?
                 startOfDay : session.getStartTime();
         LocalDateTime sessionEnd = session.getEndTime().isAfter(endOfDay) ?
@@ -256,14 +240,10 @@ public class UsageSessionServiceImpl implements UsageSessionService {
 
         adjusted.setStartTime(sessionStart);
         adjusted.setEndTime(sessionEnd);
-
-        // Calcular la duración ajustada
         adjusted.setDurationSeconds(ChronoUnit.SECONDS.between(sessionStart, sessionEnd));
-
         return adjusted;
     }
 
-    // Métodos para calcular uso por aplicación, categoría y dispositivo
     private Map<String, Long> calculateAppUsage(List<AdjustedSessionDto> sessions) {
         return sessions.stream()
                 .collect(Collectors.groupingBy(
@@ -296,28 +276,22 @@ public class UsageSessionServiceImpl implements UsageSessionService {
                 .sum();
     }
 
-
-
     @Override
     public MonthlyUsageStatsDto getMonthlyUsageStats(YearMonth month, Long deviceId) {
         User currentUser = userService.getCurrentUser();
-
         LocalDate startDate = month.atDay(1);
         LocalDate endDate = month.atEndOfMonth();
 
         Map<Integer, DailyUsageStatsDto> dailyStats = new HashMap<>();
         Map<Integer, Long> dailyUsageTrend = new HashMap<>();
 
-        // Obtener estadísticas para cada día del mes
         for (int day = 1; day <= month.lengthOfMonth(); day++) {
             LocalDate currentDate = month.atDay(day);
             DailyUsageStatsDto stats = getDailyUsageStats(currentDate, deviceId);
-
             dailyStats.put(day, stats);
             dailyUsageTrend.put(day, stats.getTotalUsageSeconds());
         }
 
-        // Calcular totales mensuales
         long totalMonthlyUsageSeconds = dailyStats.values().stream()
                 .mapToLong(DailyUsageStatsDto::getTotalUsageSeconds)
                 .sum();
@@ -326,7 +300,6 @@ public class UsageSessionServiceImpl implements UsageSessionService {
                 .mapToLong(DailyUsageStatsDto::getProductiveTimeSeconds)
                 .sum();
 
-        // Fusionar uso de aplicaciones
         Map<String, Long> appUsageTime = new HashMap<>();
         dailyStats.values().forEach(day -> {
             day.getApplicationUsage().forEach((app, time) -> {
@@ -334,7 +307,6 @@ public class UsageSessionServiceImpl implements UsageSessionService {
             });
         });
 
-        // Obtener top 5 apps
         List<AppUsageDto> topApps = appUsageTime.entrySet().stream()
                 .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
                 .limit(5)
@@ -357,20 +329,16 @@ public class UsageSessionServiceImpl implements UsageSessionService {
     @Override
     public YearlyUsageStatsDto getYearlyUsageStats(Year year, Long deviceId) {
         User currentUser = userService.getCurrentUser();
-
         Map<Month, MonthlyUsageStatsDto> monthlyStats = new HashMap<>();
         Map<Month, Long> monthlyUsageTrend = new HashMap<>();
 
-        // Obtener estadísticas para cada mes del año
         for (Month month : Month.values()) {
             YearMonth yearMonth = YearMonth.of(year.getValue(), month);
             MonthlyUsageStatsDto stats = getMonthlyUsageStats(yearMonth, deviceId);
-
             monthlyStats.put(month, stats);
             monthlyUsageTrend.put(month, stats.getTotalUsageSeconds());
         }
 
-        // Calcular totales anuales
         long totalYearlyUsageSeconds = monthlyStats.values().stream()
                 .mapToLong(MonthlyUsageStatsDto::getTotalUsageSeconds)
                 .sum();
@@ -379,7 +347,6 @@ public class UsageSessionServiceImpl implements UsageSessionService {
                 .mapToLong(MonthlyUsageStatsDto::getProductiveTimeSeconds)
                 .sum();
 
-        // Fusionar uso de aplicaciones de todos los meses
         Map<String, Long> appUsageTime = new HashMap<>();
         monthlyStats.values().forEach(month -> {
             month.getTopApplications().forEach(app -> {
@@ -387,7 +354,6 @@ public class UsageSessionServiceImpl implements UsageSessionService {
             });
         });
 
-        // Obtener top 5 apps del año
         List<AppUsageDto> topApps = appUsageTime.entrySet().stream()
                 .sorted(Map.Entry.<String, Long>comparingByValue().reversed())
                 .limit(5)
@@ -404,5 +370,4 @@ public class UsageSessionServiceImpl implements UsageSessionService {
                 .topApplications(topApps)
                 .build();
     }
-
 }
